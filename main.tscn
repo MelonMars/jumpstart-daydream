@@ -1,0 +1,351 @@
+[gd_scene load_steps=18 format=4 uid="uid://ci1j0tnfhh4xw"]
+
+[ext_resource type="Texture2D" uid="uid://c2pmqxc7h1n3p" path="res://character_yellow_duck.png" id="1_1bvp3"]
+[ext_resource type="Texture2D" uid="uid://btir6yysoy8js" path="res://terrain_dirt_block_top.png" id="2_0xm2m"]
+[ext_resource type="Texture2D" uid="uid://ceppk5553oqkt" path="res://terrain_dirt_cloud.png" id="3_h2yge"]
+[ext_resource type="Texture2D" uid="uid://dwe0e8b3pmqgw" path="res://terrain_dirt_block_right.png" id="4_1bvp3"]
+[ext_resource type="Script" uid="uid://bb5lutgq7h4lq" path="res://mustard.gd" id="5_7mycd"]
+[ext_resource type="Texture2D" uid="uid://51gqbo848ufk" path="res://Mustard Sauce Clipart.jpg" id="5_lquwl"]
+[ext_resource type="AudioStream" uid="uid://bbija8vub0w6b" path="res://mustardorketchup.mp3" id="6_272bh"]
+[ext_resource type="AudioStream" uid="uid://b5v1gbf32tq6t" path="res://Video from Facebook.mp3" id="8_5vw27"]
+
+[sub_resource type="GDScript" id="GDScript_0xm2m"]
+resource_name = "player"
+script/source = "# Snappy 2D Platformer Controller (Celeste-Style + Dash + Hazards)
+
+extends CharacterBody2D
+
+# --- Movement ---
+@export var speed: float = 280.0
+@export var acceleration: float = 0.08
+@export var friction: float = 0.12     
+@export var air_acceleration: float = 0.06 
+
+# --- Jump ---
+@export var jump_velocity: float = -420.0
+@export var jump_cut_multiplier: float = 0.4 
+@export var coyote_time: float = 0.1    
+@export var jump_buffer_time: float = 0.1
+
+# --- Wall Jump ---
+@export var wall_jump_velocity: Vector2 = Vector2(450.0, -380.0) 
+@export var wall_slide_gravity: float = 120.0
+@export var wall_jump_time: float = 0.15
+
+# --- Gravity ---
+var gravity: float = ProjectSettings.get_setting(\"physics/2d/default_gravity\")
+@export var max_fall_speed: float = 600.0
+
+# --- Dash ---
+@export var dash_speed: float = 800.0
+@export var dash_duration: float = 0.15
+@export var dash_cooldown: float = 0.4
+var dash_timer: float = 0.0
+var dash_cd_timer: float = 0.0
+var is_dashing: bool = false
+var dash_direction: Vector2 = Vector2.ZERO
+
+# --- Timers ---
+var coyote_timer: float = 0.0
+var jump_buffer_timer: float = 0.0
+var was_on_floor: bool = false
+var wall_jump_timer: float = 0.0
+var can_wall_jump: bool = false
+var frozen = false
+
+func _physics_process(delta: float):
+	update_timers(delta)
+
+	# Jump buffering
+	if Input.is_action_just_pressed(\"jump\"):
+		jump_buffer_timer = jump_buffer_time
+	
+	# Dash input
+	if Input.is_action_just_pressed(\"dash\") and dash_cd_timer <= 0:
+		start_dash()
+	
+	if is_dashing:
+		dash_timer -= delta
+		if dash_timer > 0:
+			velocity = dash_direction * dash_speed
+			move_and_slide()
+			return
+		else:
+			is_dashing = false
+			dash_cd_timer = dash_cooldown
+
+	# Gravity + wall slide
+	if not is_on_floor():
+		if is_on_wall() and velocity.y > 0 and Input.is_action_pressed(\"left\" if get_wall_normal().x > 0 else \"right\"):
+			velocity.y += wall_slide_gravity * delta
+			can_wall_jump = true
+		else:
+			velocity.y += gravity * delta
+			can_wall_jump = false
+		velocity.y = min(velocity.y, max_fall_speed)
+	else:
+		can_wall_jump = false
+
+	# Coyote time
+	if is_on_floor():
+		coyote_timer = coyote_time
+		was_on_floor = true
+	elif was_on_floor and not is_on_floor():
+		was_on_floor = false
+
+	# Movement
+	handle_horizontal_movement(delta)
+	handle_jumping()
+
+	# Jump cut
+	if velocity.y < 0 and not Input.is_action_pressed(\"jump\"):
+		velocity.y *= jump_cut_multiplier
+	
+	move_and_slide()
+
+func update_timers(delta: float):
+	if coyote_timer > 0:
+		coyote_timer -= delta
+	if jump_buffer_timer > 0:
+		jump_buffer_timer -= delta
+	if wall_jump_timer > 0:
+		wall_jump_timer -= delta
+	if dash_cd_timer > 0:
+		dash_cd_timer -= delta
+
+func handle_horizontal_movement(delta: float):
+	var input_axis = Input.get_axis(\"left\", \"right\")
+	var target_velocity = input_axis * speed
+	var accel = acceleration if is_on_floor() else air_acceleration
+	if wall_jump_timer > 0:
+		accel *= 0.3
+	if input_axis != 0:
+		velocity.x = lerp(velocity.x, target_velocity, accel)
+	else:
+		var fric = friction if is_on_floor() else friction * 0.8
+		velocity.x = lerp(velocity.x, 0.0, fric)
+
+func handle_jumping():
+	var can_jump = (is_on_floor() or coyote_timer > 0) and jump_buffer_timer > 0
+	var can_wall_jump_now = can_wall_jump and is_on_wall() and jump_buffer_timer > 0
+	if can_jump:
+		velocity.y = jump_velocity
+		jump_buffer_timer = 0
+		coyote_timer = 0
+	elif can_wall_jump_now:
+		var wall_normal = get_wall_normal()
+		velocity.x = wall_normal.x * wall_jump_velocity.x
+		velocity.y = wall_jump_velocity.y
+		wall_jump_timer = wall_jump_time
+		jump_buffer_timer = 0
+		can_wall_jump = false
+
+func start_dash():
+	var input_dir = Vector2(
+		Input.get_axis(\"left\", \"right\"),
+		Input.get_axis(\"up\", \"down\")
+	)
+	if input_dir == Vector2.ZERO:
+		input_dir = Vector2(1 if not $Sprite2D.flip_h else -1, 0)
+	dash_direction = input_dir.normalized()
+	is_dashing = true
+	dash_timer = dash_duration
+	velocity = dash_direction * dash_speed
+
+func _process(_delta):
+	if wall_jump_timer <= 0:
+		if velocity.x > 10:
+			$Sprite2D.flip_h = false
+		elif velocity.x < -10:
+			$Sprite2D.flip_h = true
+
+# --- Hazard & Trampoline Handling ---
+func _on_spike_area_body_entered(body):
+	if body == self:
+		die()
+
+func _on_trampoline_area_body_entered(body):
+	if body == self:
+		velocity.y = -600  # trampoline launch velocity
+
+func die():
+	print(\"Player died\")
+	# Reset player position or trigger death animation
+	position = Vector2.ZERO
+"
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_0xm2m"]
+size = Vector2(238, 237)
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_0xm2m"]
+texture = ExtResource("2_0xm2m")
+0:0/0 = 0
+0:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:0/0 = 0
+1:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:0/0 = 0
+2:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:0/0 = 0
+3:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:1/0 = 0
+0:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:1/0 = 0
+1:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:1/0 = 0
+2:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:1/0 = 0
+3:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:2/0 = 0
+1:2/0 = 0
+2:2/0 = 0
+3:2/0 = 0
+0:3/0 = 0
+1:3/0 = 0
+2:3/0 = 0
+3:3/0 = 0
+
+[sub_resource type="TileSet" id="TileSet_h2yge"]
+physics_layer_0/collision_layer = 1
+sources/0 = SubResource("TileSetAtlasSource_0xm2m")
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_1bvp3"]
+texture = ExtResource("3_h2yge")
+0:0/0 = 0
+0:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:0/0 = 0
+1:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:0/0 = 0
+2:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:0/0 = 0
+3:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:1/0 = 0
+0:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:1/0 = 0
+1:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:1/0 = 0
+2:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:1/0 = 0
+3:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:2/0 = 0
+0:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:2/0 = 0
+1:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:2/0 = 0
+2:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:2/0 = 0
+3:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:3/0 = 0
+1:3/0 = 0
+2:3/0 = 0
+3:3/0 = 0
+
+[sub_resource type="TileSet" id="TileSet_lquwl"]
+physics_layer_0/collision_layer = 1
+sources/0 = SubResource("TileSetAtlasSource_1bvp3")
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lquwl"]
+texture = ExtResource("4_1bvp3")
+0:0/0 = 0
+0:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:0/0 = 0
+1:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:0/0 = 0
+2:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:0/0 = 0
+3:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:1/0 = 0
+0:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:1/0 = 0
+1:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:1/0 = 0
+2:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:1/0 = 0
+3:1/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:2/0 = 0
+0:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:2/0 = 0
+1:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:2/0 = 0
+2:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:2/0 = 0
+3:2/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+0:3/0 = 0
+0:3/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+1:3/0 = 0
+1:3/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+2:3/0 = 0
+2:3/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+3:3/0 = 0
+3:3/0/physics_layer_0/polygon_0/points = PackedVector2Array(-8, -8, 8, -8, 8, 8, -8, 8)
+
+[sub_resource type="TileSet" id="TileSet_7mycd"]
+physics_layer_0/collision_layer = 1
+sources/0 = SubResource("TileSetAtlasSource_lquwl")
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_7mycd"]
+size = Vector2(32, 24)
+
+[node name="Node" type="Node"]
+
+[node name="player" type="CharacterBody2D" parent="."]
+scale = Vector2(0.5, 0.5)
+script = SubResource("GDScript_0xm2m")
+
+[node name="Sprite2D" type="Sprite2D" parent="player"]
+position = Vector2(1, 0)
+scale = Vector2(0.5, 0.5)
+texture = ExtResource("1_1bvp3")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="player"]
+position = Vector2(1, -1.5)
+scale = Vector2(0.25, 0.25)
+shape = SubResource("RectangleShape2D_0xm2m")
+
+[node name="Camera2D" type="Camera2D" parent="player"]
+scale = Vector2(0.5, 0.5)
+zoom = Vector2(2, 2)
+position_smoothing_enabled = true
+
+[node name="BaseMap" type="TileMapLayer" parent="."]
+tile_map_data = PackedByteArray("AAD6/wQAAAAAAAAAAAD6/wUAAAAAAAEAAAD6/wYAAAAAAAIAAAD6/wcAAAAAAAMAAAD7/wQAAAABAAAAAAD7/wUAAAABAAEAAAD7/wYAAAABAAIAAAD7/wcAAAABAAMAAAD8/wQAAAACAAAAAAD8/wUAAAACAAEAAAD8/wYAAAACAAIAAAD8/wcAAAACAAMAAAD9/wQAAAADAAAAAAD9/wUAAAADAAEAAAD9/wYAAAADAAIAAAD9/wcAAAADAAMAAAD+/wQAAAAAAAAAAAD+/wUAAAAAAAEAAAD+/wYAAAAAAAIAAAD+/wcAAAAAAAMAAAD//wQAAAABAAAAAAD//wUAAAABAAEAAAD//wYAAAABAAIAAAD//wcAAAABAAMAAAAAAAQAAAACAAAAAAAAAAUAAAACAAEAAAAAAAYAAAACAAIAAAAAAAcAAAACAAMAAAABAAQAAAADAAAAAAABAAUAAAADAAEAAAABAAYAAAADAAIAAAABAAcAAAADAAMAAAACAAQAAAAAAAAAAAACAAUAAAAAAAEAAAACAAYAAAAAAAIAAAACAAcAAAAAAAMAAAADAAQAAAABAAAAAAADAAUAAAABAAEAAAADAAYAAAABAAIAAAADAAcAAAABAAMAAAAEAAQAAAACAAAAAAAEAAUAAAACAAEAAAAEAAYAAAACAAIAAAAEAAcAAAACAAMAAAAFAAQAAAADAAAAAAAFAAUAAAADAAEAAAAFAAYAAAADAAIAAAAFAAcAAAADAAMAAAAGAAQAAAAAAAAAAAAGAAUAAAAAAAEAAAAGAAYAAAAAAAIAAAAGAAcAAAAAAAMAAAAHAAQAAAABAAAAAAAHAAUAAAABAAEAAAAHAAYAAAABAAIAAAAHAAcAAAABAAMAAAAIAAQAAAACAAAAAAAIAAUAAAACAAEAAAAIAAYAAAACAAIAAAAIAAcAAAACAAMAAAAJAAQAAAADAAAAAAAJAAUAAAADAAEAAAAJAAYAAAADAAIAAAAJAAcAAAADAAMAAAAKAAQAAAAAAAAAAAAKAAUAAAAAAAEAAAAKAAYAAAAAAAIAAAAKAAcAAAAAAAMAAAALAAQAAAABAAAAAAALAAUAAAABAAEAAAALAAYAAAABAAIAAAALAAcAAAABAAMAAAAMAAQAAAACAAAAAAAMAAUAAAACAAEAAAAMAAYAAAACAAIAAAAMAAcAAAACAAMAAAANAAQAAAADAAAAAAANAAUAAAADAAEAAAANAAYAAAADAAIAAAANAAcAAAADAAMAAAA=")
+tile_set = SubResource("TileSet_h2yge")
+
+[node name="TileMapLayer" type="TileMapLayer" parent="."]
+tile_map_data = PackedByteArray("AAAHAPv/AAAAAAAAAAAHAPz/AAAAAAEAAAAHAP3/AAAAAAIAAAAHAP7/AAAAAAMAAAAIAPv/AAABAAAAAAAIAPz/AAABAAEAAAAIAP3/AAABAAIAAAAIAP7/AAABAAMAAAAJAPv/AAACAAAAAAAJAPz/AAACAAEAAAAJAP3/AAACAAIAAAAJAP7/AAACAAMAAAAKAPv/AAADAAAAAAAKAPz/AAADAAEAAAAKAP3/AAADAAIAAAAKAP7/AAADAAMAAAAOAPb/AAAAAAAAAAAOAPf/AAAAAAEAAAAOAPj/AAAAAAIAAAAOAPn/AAAAAAMAAAAPAPb/AAABAAAAAAAPAPf/AAABAAEAAAAPAPj/AAABAAIAAAAPAPn/AAABAAMAAAAQAPb/AAACAAAAAAAQAPf/AAACAAEAAAAQAPj/AAACAAIAAAAQAPn/AAACAAMAAAARAPb/AAADAAAAAAARAPf/AAADAAEAAAARAPj/AAADAAIAAAARAPn/AAADAAMAAAA=")
+tile_set = SubResource("TileSet_lquwl")
+
+[node name="TileMapLayer2" type="TileMapLayer" parent="."]
+tile_map_data = PackedByteArray("AAD2/wAAAAAAAAAAAAD2/wEAAAAAAAEAAAD2/wIAAAAAAAIAAAD2/wMAAAAAAAMAAAD3/wAAAAABAAAAAAD3/wEAAAABAAEAAAD3/wIAAAABAAIAAAD3/wMAAAABAAMAAAD4/wAAAAACAAAAAAD4/wEAAAACAAEAAAD4/wIAAAACAAIAAAD4/wMAAAACAAMAAAD5/wAAAAADAAAAAAD5/wEAAAADAAEAAAD5/wIAAAADAAIAAAD5/wMAAAADAAMAAAD2//z/AAAAAAAAAAD2//3/AAAAAAEAAAD2//7/AAAAAAIAAAD2////AAAAAAMAAAD3//z/AAABAAAAAAD3//3/AAABAAEAAAD3//7/AAABAAIAAAD3////AAABAAMAAAD4//z/AAACAAAAAAD4//3/AAACAAEAAAD4//7/AAACAAIAAAD4////AAACAAMAAAD5//z/AAADAAAAAAD5//3/AAADAAEAAAD5//7/AAADAAIAAAD5////AAADAAMAAAD2//j/AAAAAAAAAAD2//n/AAAAAAEAAAD2//r/AAAAAAIAAAD2//v/AAAAAAMAAAD3//j/AAABAAAAAAD3//n/AAABAAEAAAD3//r/AAABAAIAAAD3//v/AAABAAMAAAD4//j/AAACAAAAAAD4//n/AAACAAEAAAD4//r/AAACAAIAAAD4//v/AAACAAMAAAD5//j/AAADAAAAAAD5//n/AAADAAEAAAD5//r/AAADAAIAAAD5//v/AAADAAMAAAA=")
+tile_set = SubResource("TileSet_7mycd")
+
+[node name="Area2D" type="Area2D" parent="." node_paths=PackedStringArray("pickup_sound", "flash_sound")]
+script = ExtResource("5_7mycd")
+pickup_sound = NodePath("AudioStreamPlayer2D")
+flash_sound = NodePath("AudioStreamPlayer2D2")
+flash_rect_path = NodePath("../ColorRect")
+
+[node name="AudioStreamPlayer2D" type="AudioStreamPlayer2D" parent="Area2D"]
+stream = ExtResource("6_272bh")
+
+[node name="Sprite2D" type="Sprite2D" parent="Area2D"]
+position = Vector2(258, -173)
+scale = Vector2(0.0239293, 0.0239295)
+texture = ExtResource("5_lquwl")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Area2D"]
+position = Vector2(258, -173)
+shape = SubResource("RectangleShape2D_7mycd")
+
+[node name="AudioStreamPlayer2D2" type="AudioStreamPlayer2D" parent="Area2D"]
+stream = ExtResource("8_5vw27")
+
+[node name="ColorRect" type="ColorRect" parent="."]
+anchors_preset = -1
+anchor_left = -0.282
+anchor_top = -0.408
+anchor_right = 0.381
+anchor_bottom = 0.38
+offset_left = -1656.14
+offset_top = -1683.62
+offset_right = 1895.09
+offset_bottom = 1056.76
